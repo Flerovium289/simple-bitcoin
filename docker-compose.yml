@@ -1,0 +1,59 @@
+version: '3'
+
+services:
+  node1:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    ports:
+      - "5001:5000"
+    environment:
+      - PEERS=node2:5000
+      - LOG_LEVEL=INFO
+      - MINING_DIFFICULTY=3  # 设置较低难度以加快出块
+    networks:
+      - blockchain-network
+    volumes:
+      - ./blockchain_node:/app
+    restart: unless-stopped
+    container_name: blockchain_node1
+
+  node2:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    ports:
+      - "5002:5000"
+    environment:
+      - PEERS=node1:5000
+      - LOG_LEVEL=INFO
+      - MINING_DIFFICULTY=3  # 设置较低难度以加快出块
+    networks:
+      - blockchain-network
+    volumes:
+      - ./blockchain_node:/app
+    restart: unless-stopped
+    container_name: blockchain_node2
+
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    environment:
+      - NODES=node1:5000,node2:5000
+      - TRANSACTION_INTERVAL=0.1  # 降低交易频率，以便更清晰地观察系统行为
+      - LOG_LEVEL=INFO
+    depends_on:
+      - node1
+      - node2
+    networks:
+      - blockchain-network
+    volumes:
+      - ./client_node:/app
+    restart: unless-stopped
+    container_name: blockchain_client
+
+networks:
+  blockchain-network:
+    driver: bridge
+    name: blockchain_network
