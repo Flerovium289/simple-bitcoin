@@ -64,7 +64,9 @@ def get_stats():
     stats['top_accounts'] = top_accounts
     
     logger.info(f"📊 Stats requested: {stats['blockchain']['length']} blocks, {stats['pending_transactions']} pending txs")
-    return jsonify(stats), 200@app.route('/mining/result', methods=['POST'])
+    return jsonify(stats), 200
+
+@app.route('/mining/result', methods=['POST'])
 def mining_result():
     """
     Endpoint for receiving mining results
