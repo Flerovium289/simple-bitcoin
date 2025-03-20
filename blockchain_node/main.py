@@ -1,3 +1,18 @@
+import time
+import json
+import threading
+import requests
+import hashlib
+import random
+import logging
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.exceptions import InvalidSignature
+from flask import Flask, request, jsonify
+import os
+import logging
+
+app = Flask(__name__)
 @app.route('/stats', methods=['GET'])
 def get_stats():
     """
@@ -78,17 +93,7 @@ def mining_result():
 Main program for a Bitcoin-like blockchain node
 """
 
-import time
-import json
-import threading
-import requests
-import hashlib
-import random
-import logging
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.exceptions import InvalidSignature
-from flask import Flask, request, jsonify
+
 
 # 配置日志
 logging.basicConfig(
@@ -110,7 +115,7 @@ pending_transactions = []  # Transaction pool
 account_balances = {}  # Account model: public_key -> balance
 mined_nonces = set()  # Set of nonces that have been used
 mining_thread = None
-app = Flask(__name__)
+
 
 # Node keypair
 private_key = None
@@ -770,12 +775,10 @@ def main():
     global private_key, public_key, public_key_str, blockchain, DIFFICULTY
     
     # 从环境变量配置日志级别
-    import os
     log_level = os.environ.get('LOG_LEVEL', 'INFO')
     logging.getLogger().setLevel(getattr(logging, log_level))
     
     # 配置Flask日志，减少请求日志
-    import logging
     werkzeug_logger = logging.getLogger('werkzeug')
     werkzeug_logger.setLevel(logging.WARNING)
     
@@ -811,10 +814,8 @@ def main():
     # Start the Flask app
     logger.info(f"🚀 Starting blockchain node API server on port 5000")
     app.run(host='0.0.0.0', port=5000)
-    global private_key, public_key, public_key_str, blockchain
     
     # 配置Flask日志，减少请求日志
-    import logging
     werkzeug_logger = logging.getLogger('werkzeug')
     werkzeug_logger.setLevel(logging.WARNING)
     
@@ -828,7 +829,6 @@ def main():
     logger.info(f"📦 Genesis block created with hash: {genesis['hash'][:16]}...")
     
     # Configure node addresses from environment variables
-    import os
     peers = os.environ.get('PEERS', '').split(',')
     for peer in peers:
         if peer:

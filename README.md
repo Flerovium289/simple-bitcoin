@@ -57,23 +57,17 @@ simple-bitcoin/
 1. 克隆或下载项目:
 
 ```bash
-git clone https://github.com/yourusername/simple-bitcoin.git
+git clone https://github.com/Flerovium289/simple-bitcoin.git
 cd simple-bitcoin
 ```
 
-2. 运行安装脚本:
-
-```bash
-bash install.sh
-```
-
-3. 启动系统:
+2. 启动系统:
 
 ```bash
 docker-compose up --build
 ```
 
-4. 在另一个终端窗口运行测试脚本:
+3. 在另一个终端窗口运行测试脚本:
 
 ```bash
 bash test.sh
