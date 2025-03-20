@@ -766,12 +766,18 @@ def main():
     Input: None
     Output: None
     """
+    # 声明全局变量
     global private_key, public_key, public_key_str, blockchain, DIFFICULTY
     
     # 从环境变量配置日志级别
     import os
     log_level = os.environ.get('LOG_LEVEL', 'INFO')
     logging.getLogger().setLevel(getattr(logging, log_level))
+    
+    # 配置Flask日志，减少请求日志
+    import logging
+    werkzeug_logger = logging.getLogger('werkzeug')
+    werkzeug_logger.setLevel(logging.WARNING)
     
     # 从环境变量配置挖矿难度
     difficulty = os.environ.get('MINING_DIFFICULTY')
@@ -781,11 +787,6 @@ def main():
             logger.info(f"Mining difficulty set to {DIFFICULTY} from environment")
         except ValueError:
             logger.warning(f"Invalid MINING_DIFFICULTY '{difficulty}', using default {DIFFICULTY}")
-    
-    # 配置Flask日志，减少请求日志
-    import logging
-    werkzeug_logger = logging.getLogger('werkzeug')
-    werkzeug_logger.setLevel(logging.WARNING)
     
     # Generate keypair for this node
     private_key, public_key, public_key_str = generate_keypair()
