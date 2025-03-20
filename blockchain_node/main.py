@@ -229,8 +229,13 @@ def calculate_hash(block):
     Output:
         hash_string: Hex digest of the hash
     """
+    # 创建一个不包含'hash'字段的块副本
+    block_copy = block.copy()
+    if 'hash' in block_copy:
+        del block_copy['hash']  # 排除hash字段，因为它是计算的结果
+    
     # Convert block to a string and calculate hash
-    block_string = json.dumps(block, sort_keys=True).encode('utf-8')
+    block_string = json.dumps(block_copy, sort_keys=True).encode('utf-8')
     return hashlib.sha256(block_string).hexdigest()
 
 def create_genesis_block():
@@ -310,7 +315,10 @@ def mine_block(transactions, previous_hash, height):
         
         # Try a random nonce
         block['nonce'] = random.randint(0, 1000000)
-        block_hash = calculate_hash(block)
+        
+        # 创建一个不包含'hash'字段的块，用于计算哈希
+        block_for_hash = block.copy()
+        block_hash = calculate_hash(block_for_hash)
         
         # Check if this nonce is valid and hasn't been used before
         if block['nonce'] not in mined_nonces and is_valid_proof(block, block_hash):
@@ -522,15 +530,20 @@ def validate_block(block):
             logger.info(f"Potential fork detected: Incoming block height {block['height']}, " 
                        f"our chain height {blockchain[-1]['height']}")
     
+    # 创建不含hash字段的块副本用于验证
+    block_copy = block.copy()
+    original_hash = block_copy['hash']
+    del block_copy['hash']
+    
     # Verify the block hash
-    calculated_hash = calculate_hash(block)
-    if calculated_hash != block['hash']:
-        logger.warning(f"Block hash verification failed. Given: {block['hash'][:8]}..., calculated: {calculated_hash[:8]}...")
+    calculated_hash = calculate_hash(block_copy)
+    if calculated_hash != original_hash:
+        logger.warning(f"Block hash verification failed. Given: {original_hash[:8]}..., calculated: {calculated_hash[:8]}...")
         return False
     
     # Check if hash meets difficulty requirement
-    if not is_valid_proof(block, block['hash']):
-        logger.warning(f"Block hash does not meet difficulty requirement: {block['hash'][:8]}...")
+    if not is_valid_proof(block, original_hash):
+        logger.warning(f"Block hash does not meet difficulty requirement: {original_hash[:8]}...")
         return False
     
     # Check if previous hash matches
