@@ -12,6 +12,9 @@ from flask import Flask, request, jsonify
 import os
 import logging
 
+# Import the smart contract module
+from smart_contract import deploy_contract, execute_contract, create_transfer_contract, create_auction_contract
+
 app = Flask(__name__)
 @app.route('/stats', methods=['GET'])
 def get_stats():
@@ -365,7 +368,8 @@ def mining_thread_func():
             'from': "COINBASE",
             'to': public_key_str,
             'value': MINING_REWARD,
-            'signature': "MINING_REWARD"  # No real signature for mining rewards
+            'signature': "MINING_REWARD",  # No real signature for mining rewards
+            'type': 'transfer'  # Add transaction type
         }
         
         # Get transactions from pool
@@ -376,6 +380,30 @@ def mining_thread_func():
         for tx in list(pending_transactions):
             if tx_count >= BLOCK_TRANSACTIONS_LIMIT - 1:
                 break
+                
+            # Execute the transaction to ensure it's valid
+            if tx.get('type') == 'deploy_contract':
+                # Pre-execute contract deployment
+                result = deploy_contract(tx['code'], tx['from'])
+                if not result['success']:
+                    # Skip invalid transactions
+                    continue
+                tx['result'] = result['output']
+                tx['contract_id'] = result['contract_id']
+                
+            elif tx.get('type') == 'call_contract':
+                # Pre-execute contract call
+                result = execute_contract(
+                    tx['contract_id'], 
+                    tx['from'], 
+                    tx['function'], 
+                    tx.get('args', {})
+                )
+                if not result['success']:
+                    # Skip invalid transactions
+                    continue
+                tx['result'] = result['output']
+            
             with_reward.append(tx)
             tx_count += 1
         
@@ -423,6 +451,47 @@ def stop_mining():
     if mining_thread is not None:
         mining_thread = None
 
+# def validate_transaction(transaction):
+#     """
+#     Validate a transaction
+    
+#     Input:
+#         transaction: Transaction dict
+#     Output:
+#         Boolean: True if transaction is valid, False otherwise
+#     TODO:
+#         - Check if transaction has all required fields
+#         - Verify the signature
+#         - Check if sender has enough balance
+#     """
+#     # Check if transaction has all required fields
+#     required_fields = ['timestamp', 'from', 'to', 'value', 'signature']
+#     if not all(field in transaction for field in required_fields):
+#         missing_fields = [field for field in required_fields if field not in transaction]
+#         logger.warning(f"Transaction missing required fields: {', '.join(missing_fields)}")
+#         return False
+    
+#     # Skip validation for mining rewards
+#     if transaction['from'] == "COINBASE":
+#         return True
+    
+#     # Check if sender has enough balance
+#     sender = transaction['from']
+#     value = transaction['value']
+    
+#     if sender not in account_balances:
+#         logger.warning(f"Sender account {sender[:8]}... does not exist")
+#         return False
+        
+#     if account_balances[sender] < value:
+#         logger.warning(f"Insufficient balance: {sender[:8]}... has {account_balances[sender]}, needs {value}")
+#         return False
+    
+#     # Verify signature - this would be implemented in a real system
+#     # For simplicity, we'll skip detailed signature verification here
+    
+#     return True
+
 def validate_transaction(transaction):
     """
     Validate a transaction
@@ -431,16 +500,37 @@ def validate_transaction(transaction):
         transaction: Transaction dict
     Output:
         Boolean: True if transaction is valid, False otherwise
-    TODO:
-        - Check if transaction has all required fields
-        - Verify the signature
-        - Check if sender has enough balance
+    """
+    # Check transaction type
+    if 'type' not in transaction:
+        # 为了兼容性，如果没有指定类型，默认为transfer
+        transaction['type'] = 'transfer'
+    
+    # Handle different transaction types
+    if transaction['type'] == 'transfer':
+        return validate_transfer_transaction(transaction)
+    elif transaction['type'] == 'deploy_contract':
+        return validate_deploy_contract_transaction(transaction)
+    elif transaction['type'] == 'call_contract':
+        return validate_call_contract_transaction(transaction)
+    else:
+        logger.warning(f"Unknown transaction type: {transaction['type']}")
+        return False
+
+def validate_transfer_transaction(transaction):
+    """
+    Validate a transfer transaction
+    
+    Input:
+        transaction: Transaction dict
+    Output:
+        Boolean: True if transaction is valid, False otherwise
     """
     # Check if transaction has all required fields
     required_fields = ['timestamp', 'from', 'to', 'value', 'signature']
     if not all(field in transaction for field in required_fields):
         missing_fields = [field for field in required_fields if field not in transaction]
-        logger.warning(f"Transaction missing required fields: {', '.join(missing_fields)}")
+        logger.warning(f"Transfer transaction missing required fields: {', '.join(missing_fields)}")
         return False
     
     # Skip validation for mining rewards
@@ -459,21 +549,112 @@ def validate_transaction(transaction):
         logger.warning(f"Insufficient balance: {sender[:8]}... has {account_balances[sender]}, needs {value}")
         return False
     
-    # Verify signature - this would be implemented in a real system
-    # For simplicity, we'll skip detailed signature verification here
+    # Verify signature - simplified for this example
+    # In a real implementation, we would properly verify the signature
+    
+    return True
+
+def validate_deploy_contract_transaction(transaction):
+    """
+    Validate a deploy contract transaction
+    
+    Input:
+        transaction: Transaction dict
+    Output:
+        Boolean: True if transaction is valid, False otherwise
+    """
+    # Check if transaction has all required fields
+    required_fields = ['timestamp', 'from', 'code', 'signature', 'type']
+    if not all(field in transaction for field in required_fields):
+        missing_fields = [field for field in required_fields if field not in transaction]
+        logger.warning(f"Deploy contract transaction missing required fields: {', '.join(missing_fields)}")
+        return False
+    
+    # Check if sender has an account
+    sender = transaction['from']
+    if sender not in account_balances:
+        logger.warning(f"Sender account {sender[:8]}... does not exist")
+        return False
+    
+    # Pre-execute contract deployment to validate the code
+    result = deploy_contract(transaction['code'], sender)
+    if not result['success']:
+        logger.warning(f"Contract deployment validation failed: {result['output']}")
+        return False
+    
+    # Store the contract ID in the transaction
+    transaction['contract_id'] = result['contract_id']
+    transaction['result'] = result['output']
+    
+    return True
+
+def validate_call_contract_transaction(transaction):
+    """
+    Validate a call contract transaction
+    
+    Input:
+        transaction: Transaction dict
+    Output:
+        Boolean: True if transaction is valid, False otherwise
+    """
+    # Check if transaction has all required fields
+    required_fields = ['timestamp', 'from', 'contract_id', 'function', 'signature', 'type']
+    if not all(field in transaction for field in required_fields):
+        missing_fields = [field for field in required_fields if field not in transaction]
+        logger.warning(f"Call contract transaction missing required fields: {', '.join(missing_fields)}")
+        return False
+    
+    # Check if sender has an account
+    sender = transaction['from']
+    if sender not in account_balances:
+        logger.warning(f"Sender account {sender[:8]}... does not exist")
+        return False
+    
+    # Pre-execute contract call to validate
+    result = execute_contract(
+        transaction['contract_id'], 
+        sender, 
+        transaction['function'], 
+        transaction.get('args', {})
+    )
+    
+    if not result['success']:
+        logger.warning(f"Contract call validation failed: {result['output']}")
+        return False
+    
+    # Store the result in the transaction
+    transaction['result'] = result['output']
     
     return True
 
 def process_transaction(transaction):
     """
-    Process a transaction, updating account balances
+    Process a transaction, updating account balances and contract state
     
     Input:
         transaction: Transaction dict
     Output:
         Boolean: True if processed successfully, False otherwise
-    TODO:
-        - Update sender and receiver balances
+    """
+    # Handle different transaction types
+    if transaction.get('type', 'transfer') == 'transfer':
+        return process_transfer_transaction(transaction)
+    elif transaction.get('type') == 'deploy_contract':
+        return process_deploy_contract_transaction(transaction)
+    elif transaction.get('type') == 'call_contract':
+        return process_call_contract_transaction(transaction)
+    else:
+        logger.warning(f"Unknown transaction type: {transaction.get('type', 'unknown')}")
+        return False
+
+def process_transfer_transaction(transaction):
+    """
+    Process a transfer transaction, updating account balances
+    
+    Input:
+        transaction: Transaction dict
+    Output:
+        Boolean: True if processed successfully, False otherwise
     """
     sender = transaction['from']
     receiver = transaction['to']
@@ -502,6 +683,67 @@ def process_transaction(transaction):
     
     return True
 
+def process_deploy_contract_transaction(transaction):
+    """
+    Process a deploy contract transaction
+    
+    Input:
+        transaction: Transaction dict
+    Output:
+        Boolean: True if processed successfully, False otherwise
+    """
+    sender = transaction['from']
+    code = transaction['code']
+    
+    # Deploy the contract
+    result = deploy_contract(code, sender)
+    if not result['success']:
+        logger.warning(f"❌ Failed to deploy contract: {result['output']}")
+        return False
+    
+    # Log the deployment
+    logger.info(f"📄 Contract deployed by {sender[:8]}... with ID: {result['contract_id']}")
+    
+    # Store contract ID in transaction if not already present
+    if 'contract_id' not in transaction:
+        transaction['contract_id'] = result['contract_id']
+    
+    # Store result in transaction if not already present
+    if 'result' not in transaction:
+        transaction['result'] = result['output']
+    
+    return True
+
+def process_call_contract_transaction(transaction):
+    """
+    Process a call contract transaction
+    
+    Input:
+        transaction: Transaction dict
+    Output:
+        Boolean: True if processed successfully, False otherwise
+    """
+    sender = transaction['from']
+    contract_id = transaction['contract_id']
+    function = transaction['function']
+    args = transaction.get('args', {})
+    
+    # Execute the contract
+    result = execute_contract(contract_id, sender, function, args)
+    if not result['success']:
+        logger.warning(f"❌ Failed to execute contract {contract_id}: {result['output']}")
+        return False
+    
+    # Log the execution
+    logger.info(f"✅ Contract {contract_id} executed by {sender[:8]}... Function: {function}")
+    
+    # Store result in transaction if not already present
+    if 'result' not in transaction:
+        transaction['result'] = result['output']
+    
+    return True
+
+
 def validate_block(block):
     """
     Validate a block
@@ -510,11 +752,6 @@ def validate_block(block):
         block: Block dict
     Output:
         Boolean: True if block is valid, False otherwise
-    TODO:
-        - Check if block has all required fields
-        - Verify the block hash
-        - Check if previous hash matches
-        - Validate all transactions in the block
     """
     # Check if block has all required fields
     required_fields = ['height', 'timestamp', 'transactions', 'previous_hash', 'nonce', 'hash']
@@ -555,8 +792,32 @@ def validate_block(block):
     # Validate all transactions in the block
     invalid_txs = []
     for idx, tx in enumerate(block['transactions']):
+        # For each transaction, first check basic validity
         if not validate_transaction(tx):
             invalid_txs.append(idx)
+            continue
+        
+        # For contract transactions, verify the execution result matches what's in the block
+        if tx.get('type') == 'deploy_contract' and 'result' in tx:
+            # Verify contract deployment result
+            result = deploy_contract(tx['code'], tx['from'])
+            if result['output'] != tx['result']:
+                logger.warning(f"Contract deployment result mismatch for tx {idx}")
+                invalid_txs.append(idx)
+                continue
+        
+        elif tx.get('type') == 'call_contract' and 'result' in tx:
+            # Verify contract call result
+            result = execute_contract(
+                tx['contract_id'], 
+                tx['from'], 
+                tx['function'], 
+                tx.get('args', {})
+            )
+            if result['output'] != tx['result']:
+                logger.warning(f"Contract execution result mismatch for tx {idx}. Expected: {tx['result']}, Got: {result['output']}")
+                invalid_txs.append(idx)
+                continue
     
     if invalid_txs:
         logger.warning(f"Block contains {len(invalid_txs)} invalid transactions at indices: {invalid_txs}")
@@ -566,18 +827,12 @@ def validate_block(block):
 
 def process_new_block(block):
     """
-    Process a new block, updating blockchain and account balances
+    Process a new block, updating blockchain, account balances, and smart contract state
     
     Input:
         block: Block dict
     Output:
         Boolean: True if processed successfully, False otherwise
-    TODO:
-        - Validate the block
-        - Add to blockchain
-        - Process all transactions
-        - Remove processed transactions from pool
-        - Handle potential forks
     """
     # Validate the block
     if not validate_block(block):
@@ -617,10 +872,23 @@ def process_new_block(block):
         process_transaction(tx)
         
         # Remove transaction from pending pool if it's there
-        pending_transactions[:] = [t for t in pending_transactions 
-                                  if not (t['from'] == tx['from'] and 
-                                         t['to'] == tx['to'] and 
-                                         t['value'] == tx['value'])]
+        if tx.get('type', 'transfer') == 'transfer':
+            pending_transactions[:] = [t for t in pending_transactions 
+                                      if not (t.get('type', 'transfer') == 'transfer' and
+                                             t['from'] == tx['from'] and 
+                                             t['to'] == tx['to'] and 
+                                             t['value'] == tx['value'])]
+        elif tx.get('type') == 'deploy_contract':
+            pending_transactions[:] = [t for t in pending_transactions 
+                                      if not (t.get('type') == 'deploy_contract' and
+                                             t['from'] == tx['from'] and 
+                                             t['code'] == tx['code'])]
+        elif tx.get('type') == 'call_contract':
+            pending_transactions[:] = [t for t in pending_transactions 
+                                      if not (t.get('type') == 'call_contract' and
+                                             t['from'] == tx['from'] and 
+                                             t['contract_id'] == tx['contract_id'] and
+                                             t['function'] == tx['function'])]
     
     return True
 
@@ -687,16 +955,24 @@ def new_transaction():
     
     # Validate the transaction
     if not validate_transaction(transaction):
-        logger.warning(f"❌ Invalid transaction received from {transaction.get('from', 'unknown')[:8]}... to {transaction.get('to', 'unknown')[:8]}...")
+        if 'type' in transaction:
+            logger.warning(f"❌ Invalid {transaction['type']} transaction received from {transaction.get('from', 'unknown')[:8]}...")
+        else:
+            logger.warning(f"❌ Invalid transaction received from {transaction.get('from', 'unknown')[:8]}... to {transaction.get('to', 'unknown')[:8]}...")
         return jsonify({'message': 'Invalid transaction'}), 400
     
     # Add to pending transactions
     pending_transactions.append(transaction)
     
-    # 为了减少日志噪音，只对每第10个交易或大额交易记录日志
-    tx_value = transaction.get('value', 0)
-    if len(pending_transactions) % 10 == 0 or tx_value > 50:
-        logger.info(f"💰 New transaction: {transaction['from'][:8]}... -> {transaction['to'][:8]}..., {tx_value} BTC. Pool size: {len(pending_transactions)}")
+    # Log based on transaction type
+    if transaction.get('type', 'transfer') == 'transfer':
+        tx_value = transaction.get('value', 0)
+        if len(pending_transactions) % 10 == 0 or tx_value > 50:
+            logger.info(f"💰 New transfer: {transaction['from'][:8]}... -> {transaction['to'][:8]}..., {tx_value} BTC. Pool size: {len(pending_transactions)}")
+    elif transaction.get('type') == 'deploy_contract':
+        logger.info(f"📄 New contract deployment from {transaction['from'][:8]}... Contract ID: {transaction.get('contract_id', 'unknown')}")
+    elif transaction.get('type') == 'call_contract':
+        logger.info(f"📞 New contract call from {transaction['from'][:8]}... Contract: {transaction['contract_id']} Function: {transaction['function']}")
     
     return jsonify({'message': 'Transaction will be added to the next block'}), 201
 
@@ -779,6 +1055,122 @@ def register_peers():
     
     return jsonify({'message': 'New nodes have been added', 'total_nodes': NODE_ADDRESSES}), 201
 
+@app.route('/contracts/deploy', methods=['POST'])
+def deploy_new_contract():
+    """
+    Endpoint for deploying a new contract
+    
+    Input: JSON with code, from, signature in request body
+    Output: JSON response
+    """
+    data = request.get_json()
+    
+    # Check required fields
+    required_fields = ['code', 'from', 'signature']
+    if not all(field in data for field in required_fields):
+        missing_fields = [field for field in required_fields if field not in data]
+        return jsonify({'message': f'Missing fields: {", ".join(missing_fields)}'}), 400
+    
+    # Create contract deployment transaction
+    transaction = {
+        'timestamp': time.time(),
+        'from': data['from'],
+        'code': data['code'],
+        'signature': data['signature'],
+        'type': 'deploy_contract'
+    }
+    
+    # Validate and add to pending transactions
+    if not validate_transaction(transaction):
+        return jsonify({'message': 'Invalid contract deployment'}), 400
+    
+    pending_transactions.append(transaction)
+    
+    logger.info(f"📄 New contract deployment from {transaction['from'][:8]}... Contract ID: {transaction.get('contract_id', 'unknown')}")
+    
+    return jsonify({
+        'message': 'Contract deployment will be added to the next block',
+        'contract_id': transaction.get('contract_id', 'unknown')
+    }), 201
+
+@app.route('/contracts/call', methods=['POST'])
+def call_contract():
+    """
+    Endpoint for calling a contract function
+    
+    Input: JSON with contract_id, from, function, args, signature in request body
+    Output: JSON response
+    """
+    data = request.get_json()
+    
+    # Check required fields
+    required_fields = ['contract_id', 'from', 'function', 'signature']
+    if not all(field in data for field in required_fields):
+        missing_fields = [field for field in required_fields if field not in data]
+        return jsonify({'message': f'Missing fields: {", ".join(missing_fields)}'}), 400
+    
+    # Create contract call transaction
+    transaction = {
+        'timestamp': time.time(),
+        'from': data['from'],
+        'contract_id': data['contract_id'],
+        'function': data['function'],
+        'args': data.get('args', {}),
+        'signature': data['signature'],
+        'type': 'call_contract'
+    }
+    
+    # Validate and add to pending transactions
+    if not validate_transaction(transaction):
+        return jsonify({'message': 'Invalid contract call'}), 400
+    
+    pending_transactions.append(transaction)
+    
+    logger.info(f"📞 New contract call from {transaction['from'][:8]}... Contract: {transaction['contract_id']} Function: {transaction['function']}")
+    
+    return jsonify({
+        'message': 'Contract call will be added to the next block',
+        'expected_result': transaction.get('result', 'Unknown')
+    }), 201
+
+@app.route('/contracts/<contract_id>', methods=['GET'])
+def get_contract(contract_id):
+    """
+    Endpoint for getting contract information
+    
+    Input: Contract ID in URL
+    Output: JSON with contract information
+    """
+    # Import contract info from smart_contract module
+    from smart_contract import deployed_contracts
+    
+    if contract_id not in deployed_contracts:
+        return jsonify({'message': 'Contract not found'}), 404
+    
+    contract = deployed_contracts[contract_id]
+    
+    # Don't include the code for security reasons, just basic info
+    contract_info = {
+        'contract_id': contract_id,
+        'owner': contract['owner'],
+        'deployed_in_block': find_contract_block(contract_id)
+    }
+    
+    return jsonify(contract_info), 200
+
+def find_contract_block(contract_id):
+    """
+    Find the block where a contract was deployed
+    
+    Input: Contract ID
+    Output: Block height or None if not found
+    """
+    for block in blockchain:
+        for tx in block['transactions']:
+            if tx.get('type') == 'deploy_contract' and tx.get('contract_id') == contract_id:
+                return block['height']
+    return None
+
 def main():
     """
     Main function to initialize and start the node
@@ -823,33 +1215,16 @@ def main():
     
     logger.info(f"🌐 Connected to peers: {NODE_ADDRESSES}")
     
-    # Start mining
-    start_mining()
+    # Create example contracts for easy testing
+    # Deploy transfer contract
+    transfer_code = create_transfer_contract()
+    deploy_contract(transfer_code, public_key_str)
+    logger.info(f"📄 Example transfer contract created")
     
-    # Start the Flask app
-    logger.info(f"🚀 Starting blockchain node API server on port 5000")
-    app.run(host='0.0.0.0', port=5000)
-    
-    # 配置Flask日志，减少请求日志
-    werkzeug_logger = logging.getLogger('werkzeug')
-    werkzeug_logger.setLevel(logging.WARNING)
-    
-    # Generate keypair for this node
-    private_key, public_key, public_key_str = generate_keypair()
-    logger.info(f"🔑 Node started with public key: {public_key_str[:16]}...")
-    
-    # Create genesis block
-    genesis = create_genesis_block()
-    blockchain = [genesis]
-    logger.info(f"📦 Genesis block created with hash: {genesis['hash'][:16]}...")
-    
-    # Configure node addresses from environment variables
-    peers = os.environ.get('PEERS', '').split(',')
-    for peer in peers:
-        if peer:
-            NODE_ADDRESSES.append(peer)
-    
-    logger.info(f"🌐 Connected to peers: {NODE_ADDRESSES}")
+    # Deploy auction contract
+    auction_code = create_auction_contract()
+    deploy_contract(auction_code, public_key_str)
+    logger.info(f"📄 Example auction contract created")
     
     # Start mining
     start_mining()
