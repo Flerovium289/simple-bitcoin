@@ -13,7 +13,12 @@ import os
 import logging
 
 # Import the smart contract module
-from smart_contract import deploy_contract, execute_contract, create_transfer_contract, create_auction_contract
+# 修改import部分，确保正确导入smart_contract模块的函数
+from smart_contract import (
+    deploy_contract, execute_contract, 
+    create_transfer_contract, create_auction_contract,
+    get_deployed_contracts, get_contract
+)
 
 app = Flask(__name__)
 @app.route('/stats', methods=['GET'])
@@ -348,9 +353,9 @@ def mining_thread_func():
     
     Input: None
     Output: None
-    TODO:
-        - Continuously try to mine new blocks
-        - If successful, process the block locally and broadcast
+    持续循环地尝试挖掘新区块，如果挖矿成功，则：
+        --本地执行区块处理逻辑；
+        --将新挖出的区块广播给其他节点。
     """
     global mining_thread
     
@@ -358,11 +363,13 @@ def mining_thread_func():
     
     while True:
         # Get latest block
+        # 获取当前链上的最新区块，并计算下一个区块的高度和前一区块哈希。
         latest_block = blockchain[-1]
         height = latest_block['height'] + 1
         previous_hash = latest_block['hash']
         
         # Create a reward transaction
+        # 挖矿成功后，系统奖励一笔币（这里是伪签名 "MINING_REWARD"，表示系统发币），这个交易会强制加入新区块。
         reward_tx = {
             'timestamp': time.time(),
             'from': "COINBASE",
@@ -377,11 +384,14 @@ def mining_thread_func():
         tx_count = 0
         
         # Add transactions from pool up to limit
+        # 遍历 pending_transactions 交易池；每个交易都提前执行（模拟执行），如果成功则加入待打包交易列表；
+        # 最多打包 BLOCK_TRANSACTIONS_LIMIT 条（减去奖励交易）。
         for tx in list(pending_transactions):
             if tx_count >= BLOCK_TRANSACTIONS_LIMIT - 1:
                 break
                 
             # Execute the transaction to ensure it's valid
+            #  支持两种智能合约相关交易: 部署合约和调用合约
             if tx.get('type') == 'deploy_contract':
                 # Pre-execute contract deployment
                 result = deploy_contract(tx['code'], tx['from'])
@@ -759,7 +769,7 @@ def validate_block(block):
         
         # For contract transactions, verify the execution result matches what's in the block
         if tx.get('type') == 'deploy_contract' and 'result' in tx:
-            # Verify contract deployment result
+            # 验证合约部署结果
             result = deploy_contract(tx['code'], tx['from'])
             if result['output'] != tx['result']:
                 logger.warning(f"Contract deployment result mismatch for tx {idx}")
@@ -767,7 +777,7 @@ def validate_block(block):
                 continue
         
         elif tx.get('type') == 'call_contract' and 'result' in tx:
-            # Verify contract call result
+            # 验证合约调用结果
             result = execute_contract(
                 tx['contract_id'], 
                 tx['from'], 
@@ -784,6 +794,30 @@ def validate_block(block):
         return False
     
     return True
+
+# 修改接口函数，使用新的函数获取合约信息
+@app.route('/contracts/<contract_id>', methods=['GET'])
+def get_contract_info(contract_id):
+    """
+    Endpoint for getting contract information
+    
+    Input: Contract ID in URL
+    Output: JSON with contract information
+    """
+    # 使用新的函数获取合约信息
+    contract = get_contract(contract_id)
+    
+    if not contract:
+        return jsonify({'message': 'Contract not found'}), 404
+    
+    # Don't include the code for security reasons, just basic info
+    contract_info = {
+        'contract_id': contract_id,
+        'owner': contract['owner'],
+        'deployed_in_block': find_contract_block(contract_id)
+    }
+    
+    return jsonify(contract_info), 200
 
 def process_new_block(block):
     """
@@ -1044,6 +1078,7 @@ def deploy_new_contract():
     if not validate_transaction(transaction):
         return jsonify({'message': 'Invalid contract deployment'}), 400
     
+    # 把合法的交易放进待打包交易池（等待被矿工或出块节点处理）
     pending_transactions.append(transaction)
     
     logger.info(f"📄 New contract deployment from {transaction['from'][:8]}... Contract ID: {transaction.get('contract_id', 'unknown')}")
@@ -1208,14 +1243,25 @@ def main():
     
     # Create example contracts for easy testing
     # Deploy transfer contract
-    transfer_code = create_transfer_contract()
-    deploy_contract(transfer_code, public_key_str)
-    logger.info(f"📄 Example transfer contract created")
-    
-    # Deploy auction contract
-    auction_code = create_auction_contract()
-    deploy_contract(auction_code, public_key_str)
-    logger.info(f"📄 Example auction contract created")
+    # 创建示例合约
+    try:
+        # 部署转账合约
+        transfer_code = create_transfer_contract()
+        transfer_result = deploy_contract(transfer_code, public_key_str)
+        if transfer_result['success']:
+            logger.info(f"📄 Example transfer contract created with ID: {transfer_result['contract_id']}")
+        else:
+            logger.warning(f"Failed to deploy transfer contract: {transfer_result['output']}")
+            
+        # 部署拍卖合约
+        auction_code = create_auction_contract()
+        auction_result = deploy_contract(auction_code, public_key_str)
+        if auction_result['success']:
+            logger.info(f"📄 Example auction contract created with ID: {auction_result['contract_id']}")
+        else:
+            logger.warning(f"Failed to deploy auction contract: {auction_result['output']}")
+    except Exception as e:
+        logger.error(f"Error creating example contracts: {str(e)}")
     
     # Start mining
     start_mining()

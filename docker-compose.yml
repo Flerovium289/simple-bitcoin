@@ -11,10 +11,12 @@ services:
       - PEERS=node2:5000
       - LOG_LEVEL=INFO
       - MINING_DIFFICULTY=3 # 设置较低难度以加快出块
+      - NODE_ID=node1 # 新增：节点标识符
     networks:
       - blockchain-network
     volumes:
       - ./blockchain_node:/app
+      - node1_data:/app/data # 新增：持久化存储
     restart: unless-stopped
     container_name: blockchain_node1
 
@@ -28,10 +30,12 @@ services:
       - PEERS=node1:5000
       - LOG_LEVEL=INFO
       - MINING_DIFFICULTY=3 # 设置较低难度以加快出块
+      - NODE_ID=node2 # 新增：节点标识符
     networks:
       - blockchain-network
     volumes:
       - ./blockchain_node:/app
+      - node2_data:/app/data # 新增：持久化存储
     restart: unless-stopped
     container_name: blockchain_node2
 
@@ -76,3 +80,7 @@ networks:
   blockchain-network:
     driver: bridge
     name: blockchain_network
+
+volumes:
+  node1_data: # 新增：节点1数据卷
+  node2_data: # 新增：节点2数据卷

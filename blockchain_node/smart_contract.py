@@ -9,6 +9,9 @@ import hashlib
 import logging
 import random
 import time
+import os
+import threading
+import pickle
 
 # Configure logger
 logging.basicConfig(
@@ -18,9 +21,56 @@ logging.basicConfig(
 )
 logger = logging.getLogger('smart_contract')
 
-# Global state database for contracts
-contract_state_db = {}  # Format: {contract_id-variable_name: value}
-deployed_contracts = {}  # Format: {contract_id: {'code': code, 'owner': owner}}
+# 为每个节点创建独立的状态存储
+# 使用节点ID (可以通过环境变量获取) 来区分不同节点
+NODE_ID = os.environ.get('NODE_ID', 'node1')  # 默认为node1
+
+# 使用互斥锁保护状态访问
+state_lock = threading.Lock()
+
+# 全局状态但是基于节点ID隔离
+# 每个节点有自己的状态空间
+node_states = {}
+
+def get_node_state():
+    """
+    获取当前节点的状态
+    如果不存在则初始化
+    """
+    with state_lock:
+        if NODE_ID not in node_states:
+            node_states[NODE_ID] = {
+                'contract_state_db': {},      # 合约状态数据库
+                'deployed_contracts': {}      # 已部署的合约
+            }
+        return node_states[NODE_ID]
+
+def save_state_to_disk():
+    """
+    将状态保存到磁盘（可选）
+    """
+    try:
+        state_file = f"state_{NODE_ID}.pkl"
+        with open(state_file, 'wb') as f:
+            pickle.dump(get_node_state(), f)
+        logger.info(f"State saved to {state_file}")
+    except Exception as e:
+        logger.warning(f"Failed to save state: {e}")
+
+def load_state_from_disk():
+    """
+    从磁盘加载状态（可选）
+    """
+    try:
+        state_file = f"state_{NODE_ID}.pkl"
+        if os.path.exists(state_file):
+            with open(state_file, 'rb') as f:
+                state = pickle.load(f)
+                with state_lock:
+                    node_states[NODE_ID] = state
+            logger.info(f"State loaded from {state_file}")
+    except Exception as e:
+        logger.warning(f"Failed to load state: {e}")
 
 def generate_contract_id(code, owner):
     """
@@ -49,20 +99,23 @@ def deploy_contract(code, owner):
     """
     # For simplicity, we'll check if code is valid by trying to compile it
     try:
-        # In a real implementation, we would compile the code
-        # Here we'll just check if it's valid Python syntax
+        # 验证代码
         compile(code, '<string>', 'exec')
         
-        # Generate a unique contract ID
+        # 生成合约ID
         contract_id = generate_contract_id(code, owner)
         
-        # Store the contract
-        deployed_contracts[contract_id] = {
-            'code': code,
-            'owner': owner
-        }
+        # 获取节点状态
+        state = get_node_state()
         
-        logger.info(f"📄 Contract deployed with ID: {contract_id} by {owner[:8]}...")
+        # 存储合约
+        with state_lock:
+            state['deployed_contracts'][contract_id] = {
+                'code': code,
+                'owner': owner
+            }
+        
+        logger.info(f"📄 Node {NODE_ID} deployed contract with ID: {contract_id} by {owner[:8]}...")
         return {
             'success': True,
             'output': "Success",
@@ -87,37 +140,60 @@ def execute_contract(contract_id, caller, function, args=None):
     Output:
         result: Dictionary containing execution result and state changes
     """
-    logger.info(f"🔄 Executing contract {contract_id}, function: {function}, caller: {caller[:8]}...")
+    logger.info(f"🔄 Node {NODE_ID} executing contract {contract_id}, function: {function}, caller: {caller[:8]}...")
     logger.info(f"🔧 Function args: {args}")
     
-    if contract_id not in deployed_contracts:
-        logger.warning(f"❌ Contract {contract_id} not found")
-        return {
-            'success': False,
-            'output': "Fail: Contract not found"
-        }
+    # 获取节点状态
+    state = get_node_state()
     
-    # Get the contract code
-    contract = deployed_contracts[contract_id]
-    code = contract['code']
+    # 检查合约是否存在
+    with state_lock:
+        if contract_id not in state['deployed_contracts']:
+            logger.warning(f"❌ Contract {contract_id} not found in node {NODE_ID} state")
+            return {
+                'success': False,
+                'output': f"Fail: Contract not found"
+            }
+    
+        # Get the contract code
+        contract = state['deployed_contracts'][contract_id]
+        code = contract['code']
     
     # Log current contract state
     current_state = {}
-    for key in contract_state_db:
-        if key.startswith(f"{contract_id}-"):
-            var_name = key[len(contract_id)+1:]
-            current_state[var_name] = contract_state_db[key]
+    with state_lock:
+        for key in state['contract_state_db']:
+            if key.startswith(f"{contract_id}-"):
+                var_name = key[len(contract_id)+1:]
+                current_state[var_name] = state['contract_state_db'][key]
     
-    logger.info(f"📊 Current contract state: {current_state}")
+    logger.info(f"📊 Current contract state on node {NODE_ID}: {current_state}")
+    
+    # 创建合约环境，注意我们需要传递节点状态的引用
+    contract_state_changes = {}
+    
+    # 函数用于获取合约状态
+    def get_state(key):
+        full_key = f"{contract_id}-{key}"
+        with state_lock:
+            return state['contract_state_db'].get(full_key)
+    
+    # 函数用于设置合约状态
+    def set_state(key, value):
+        full_key = f"{contract_id}-{key}"
+        with state_lock:
+            state['contract_state_db'][full_key] = value
+            contract_state_changes[key] = value
+        return full_key, value
     
     # Prepare execution environment
     env = {
-        'contract_id': contract_id,
+        'contract_id': contract_id,  # 传递合约ID
         'caller': caller,
         'args': args or {},  # 提供全局参数字典
-        'get_state': lambda key: get_contract_state(contract_id, key),
-        'set_state': lambda key, value: set_contract_state(contract_id, key, value),
-        'contract_state_changes': {},  # To track state changes
+        'get_state': get_state,
+        'set_state': set_state,
+        'contract_state_changes': contract_state_changes,  # To track state changes
         'time': time,  # Add time module for contract use
     }
     
@@ -135,32 +211,21 @@ def execute_contract(contract_id, caller, function, args=None):
                 'output': f"Fail: Function {function} not found"
             }
         
-        # Reset state changes tracker
-        env['contract_state_changes'] = {}
-        
-        # 修改关键部分：总是调用不带参数的函数
-        # 之前的代码：result = env[function](**args) if args else env[function]()
-        # 现在我们改为：
+        # 执行函数
         logger.info(f"🚀 Calling function {function}...")
         result = env[function]()  # 始终不传递任何参数，因为合约函数将从全局 args 获取参数
         logger.info(f"✅ Function execution result: {result}")
         
         # Collect state changes
         state_changes = []
-        for key, value in env['contract_state_changes'].items():
+        for key, value in contract_state_changes.items():
             full_key = f"{contract_id}-{key}"
             state_changes.append(f"{full_key}:{value}")
         
-        logger.info(f"📝 State changes: {state_changes}")
+        logger.info(f"📝 State changes on node {NODE_ID}: {state_changes}")
         
-        # Log updated contract state
-        updated_state = {}
-        for key in contract_state_db:
-            if key.startswith(f"{contract_id}-"):
-                var_name = key[len(contract_id)+1:]
-                updated_state[var_name] = contract_state_db[key]
-        
-        logger.info(f"📊 Updated contract state: {updated_state}")
+        # 可选：保存状态到磁盘
+        save_state_to_disk()
         
         return {
             'success': True,
@@ -176,65 +241,49 @@ def execute_contract(contract_id, caller, function, args=None):
             'output': f"Fail: {str(e)}"
         }
 
-def get_contract_state(contract_id, key):
-    """
-    Get a value from contract state
-    
-    Input:
-        contract_id: ID of the contract
-        key: State variable name
-    Output:
-        value: Value of the state variable, or None if not found
-    """
-    full_key = f"{contract_id}-{key}"
-    return contract_state_db.get(full_key)
 
-def set_contract_state(contract_id, key, value):
+def get_deployed_contracts():
     """
-    Set a value in contract state
+    Get all deployed contracts
     
-    Input:
-        contract_id: ID of the contract
-        key: State variable name
-        value: Value to set
-    Output:
-        None
+    Input: None
+    Output: Dictionary of deployed contracts
     """
-    full_key = f"{contract_id}-{key}"
-    contract_state_db[full_key] = value
+    state = get_node_state()
+    with state_lock:
+        return state['deployed_contracts'].copy()
+
+def get_contract(contract_id):
+    """
+    Get a specific contract by ID
     
-    # Track the state change for transaction output
-    return full_key, value
+    Input: contract_id
+    Output: Contract dictionary or None
+    """
+    state = get_node_state()
+    with state_lock:
+        return state['deployed_contracts'].get(contract_id)
 
 # Example contracts
-
 def create_transfer_contract():
     """
     Create a simple transfer contract for testing
-    
-    Input: None
-    Output: Contract code as string
     """
     code = """
 def init():
+    # 不再引用外部的 contract_id 变量
     set_state('balance', 0)
-    contract_state_changes['balance'] = 0
     return "Transfer contract initialized"
 
-# 修改后的 deposit 函数，不接受任何参数
 def deposit():
     current_balance = get_state('balance') or 0
-    # 使用全局 args 变量获取 amount
     amount = args.get('amount', 0)
     new_balance = current_balance + amount
     set_state('balance', new_balance)
-    contract_state_changes['balance'] = new_balance
     return f"Deposited {amount}, new balance: {new_balance}"
 
-# 修改后的 withdraw 函数，不接受任何参数
 def withdraw():
     current_balance = get_state('balance') or 0
-    # 使用全局 args 变量获取 amount
     amount = args.get('amount', 0)
     
     if amount > current_balance:
@@ -242,7 +291,6 @@ def withdraw():
     
     new_balance = current_balance - amount
     set_state('balance', new_balance)
-    contract_state_changes['balance'] = new_balance
     return f"Withdrawn {amount}, new balance: {new_balance}"
 
 def get_balance():
@@ -259,6 +307,9 @@ def create_auction_contract():
     """
     code = """
 def init():
+    # 使用环境中已有的 contract_id 变量
+    contract_id_val = contract_id  # 从环境中获取合约ID
+    
     # Initialize auction state
     set_state('highest_bid', 0)
     set_state('highest_bidder', '')
@@ -275,7 +326,7 @@ def init():
     contract_state_changes['item_description'] = args.get('description', 'No description')
     contract_state_changes['closed'] = False
     
-    return "Auction initialized"
+    return f"Auction contract {contract_id_val} initialized"
 
 # 关键修改：不使用任何参数直接定义 bid 函数
 def bid():
