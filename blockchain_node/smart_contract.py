@@ -114,7 +114,7 @@ def execute_contract(contract_id, caller, function, args=None):
     env = {
         'contract_id': contract_id,
         'caller': caller,
-        'args': args or {},
+        'args': args or {},  # 提供全局参数字典
         'get_state': lambda key: get_contract_state(contract_id, key),
         'set_state': lambda key, value: set_contract_state(contract_id, key, value),
         'contract_state_changes': {},  # To track state changes
@@ -138,9 +138,11 @@ def execute_contract(contract_id, caller, function, args=None):
         # Reset state changes tracker
         env['contract_state_changes'] = {}
         
-        # Call the requested function
+        # 修改关键部分：总是调用不带参数的函数
+        # 之前的代码：result = env[function](**args) if args else env[function]()
+        # 现在我们改为：
         logger.info(f"🚀 Calling function {function}...")
-        result = env[function](**args) if args else env[function]()
+        result = env[function]()  # 始终不传递任何参数，因为合约函数将从全局 args 获取参数
         logger.info(f"✅ Function execution result: {result}")
         
         # Collect state changes
@@ -219,15 +221,20 @@ def init():
     contract_state_changes['balance'] = 0
     return "Transfer contract initialized"
 
+# 修改后的 deposit 函数，不接受任何参数
 def deposit():
     current_balance = get_state('balance') or 0
-    new_balance = current_balance + args.get('amount', 0)
+    # 使用全局 args 变量获取 amount
+    amount = args.get('amount', 0)
+    new_balance = current_balance + amount
     set_state('balance', new_balance)
     contract_state_changes['balance'] = new_balance
-    return f"Deposited {args.get('amount', 0)}, new balance: {new_balance}"
+    return f"Deposited {amount}, new balance: {new_balance}"
 
+# 修改后的 withdraw 函数，不接受任何参数
 def withdraw():
     current_balance = get_state('balance') or 0
+    # 使用全局 args 变量获取 amount
     amount = args.get('amount', 0)
     
     if amount > current_balance:
@@ -270,6 +277,7 @@ def init():
     
     return "Auction initialized"
 
+# 关键修改：不使用任何参数直接定义 bid 函数
 def bid():
     # Check if auction is still open
     if get_state('closed'):
@@ -280,9 +288,9 @@ def bid():
         contract_state_changes['closed'] = True
         raise Exception("Auction has ended")
     
-    # Get current highest bid
+    # Get current highest bid and the new bid amount from args
     current_highest = get_state('highest_bid')
-    bid_amount = args.get('amount', 0)
+    bid_amount = args.get('amount', 0)  # 从全局变量 args 获取数据
     
     # Check if bid is higher than current highest
     if bid_amount <= current_highest:

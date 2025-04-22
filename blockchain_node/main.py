@@ -1131,6 +1131,37 @@ def find_contract_block(contract_id):
                 return block['height']
     return None
 
+@app.route('/accounts/create', methods=['POST'])
+def create_account():
+    """
+    Endpoint for creating a new account with initial balance
+    
+    Input: JSON with address and initial_balance in request body
+    Output: JSON response
+    """
+    data = request.get_json()
+    
+    if 'address' not in data:
+        return jsonify({'message': 'Missing address field'}), 400
+    
+    address = data['address']
+    initial_balance = data.get('initial_balance', 1000)  # Default to 1000 if not specified
+    
+    # Add the account with initial balance
+    if address not in account_balances:
+        account_balances[address] = initial_balance
+        logger.info(f"👤 New account created: {address[:8]}... with initial balance: {initial_balance}")
+    else:
+        # If account exists, add to its balance
+        account_balances[address] += initial_balance
+        logger.info(f"💰 Added {initial_balance} to existing account: {address[:8]}...")
+    
+    return jsonify({
+        'address': address, 
+        'balance': account_balances[address],
+        'message': 'Account created/updated successfully'
+    }), 201
+
 def main():
     """
     Main function to initialize and start the node

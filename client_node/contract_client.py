@@ -217,6 +217,44 @@ def call_contract(account, contract_id, function_name, args=None):
         print(f"Error calling contract: {e}")
         return None
 
+
+# Add this new function after the get_balance function in contract_client.py
+
+def register_account(account, initial_balance=1000):
+    """
+    Register an account with the blockchain node and give it an initial balance
+    
+    Input:
+        account: (private_key, public_key, public_key_str)
+        initial_balance: Initial balance to provide (default: 1000)
+    Output:
+        success: Boolean indicating success
+    """
+    if not NODE_ADDRESSES:
+        return False
+    
+    node_address = NODE_ADDRESSES[0]
+    account_address = account[2]
+    
+    # Create request to register account
+    data = {
+        'address': account_address,
+        'initial_balance': initial_balance
+    }
+    
+    try:
+        response = requests.post(f"http://{node_address}/accounts/create", json=data)
+        if response.status_code == 201:
+            print(f"Account registered: {account_address[:8]}... with balance {initial_balance}")
+            return True
+        else:
+            print(f"Account registration failed: {response.json()}")
+            return False
+    except requests.exceptions.RequestException as e:
+        print(f"Error registering account: {e}")
+        return False
+    
+    
 # Test functions
 
 def test_transfer_contract():
@@ -232,33 +270,37 @@ def test_transfer_contract():
     print(f"Account 1: {account1[2][:8]}...")
     print(f"Account 2: {account2[2][:8]}...")
     
+    # Register accounts and give them initial balances
+    print("Registering accounts with blockchain nodes...")
+    register_account(account1, 1000)
+    register_account(account2, 1000)
+    time.sleep(WAIT_TIME)
+    
     # Get initial balance of account1
     balance1 = get_balance(account1[2])
     print(f"Initial balance of Account 1: {balance1} BTC")
     
-    # If account1 has no funds, request some
-    if balance1 < 100:
-        print("Account 1 needs funds. Waiting for mining rewards...")
-        time.sleep(10)  # Wait for mining rewards
-        balance1 = get_balance(account1[2])
-        print(f"New balance of Account 1: {balance1} BTC")
-    
-    # Create transfer contract
+    # 修改后的转账合约代码
     transfer_code = """
 def init():
     set_state('balance', 0)
     contract_state_changes['balance'] = 0
     return "Transfer contract initialized"
 
+# 修改后的 deposit 函数，不接受任何参数
 def deposit():
     current_balance = get_state('balance') or 0
-    new_balance = current_balance + args.get('amount', 0)
+    # 使用全局 args 变量获取 amount
+    amount = args.get('amount', 0)
+    new_balance = current_balance + amount
     set_state('balance', new_balance)
     contract_state_changes['balance'] = new_balance
-    return f"Deposited {args.get('amount', 0)}, new balance: {new_balance}"
+    return f"Deposited {amount}, new balance: {new_balance}"
 
+# 修改后的 withdraw 函数，不接受任何参数
 def withdraw():
     current_balance = get_state('balance') or 0
+    # 使用全局 args 变量获取 amount
     amount = args.get('amount', 0)
     
     if amount > current_balance:
@@ -326,7 +368,14 @@ def test_auction_contract():
     print(f"Bidder 1: {bidder1[2][:8]}...")
     print(f"Bidder 2: {bidder2[2][:8]}...")
     
-    # Create auction contract
+    # Register accounts and give them initial balances
+    print("Registering accounts with blockchain nodes...")
+    register_account(seller, 1000)
+    register_account(bidder1, 1000)
+    register_account(bidder2, 1000)
+    time.sleep(WAIT_TIME)
+    
+    # Create auction contract - 修改后的合约代码
     auction_code = """
 def init():
     # Initialize auction state
@@ -347,6 +396,7 @@ def init():
     
     return "Auction initialized"
 
+# 关键修改：不使用任何参数直接定义 bid 函数
 def bid():
     # Check if auction is still open
     if get_state('closed'):
@@ -357,9 +407,9 @@ def bid():
         contract_state_changes['closed'] = True
         raise Exception("Auction has ended")
     
-    # Get current highest bid
+    # Get current highest bid and the new bid amount from args
     current_highest = get_state('highest_bid')
-    bid_amount = args.get('amount', 0)
+    bid_amount = args.get('amount', 0)  # 从全局 args 变量获取数据
     
     # Check if bid is higher than current highest
     if bid_amount <= current_highest:
@@ -459,6 +509,11 @@ def test_invalid_contract():
     # Generate account
     account = generate_keypair()
     print(f"Account: {account[2][:8]}...")
+    
+    # Register account and give it initial balance
+    print("Registering account with blockchain nodes...")
+    register_account(account, 1000)
+    time.sleep(WAIT_TIME)
     
     # Create invalid contract with syntax error
     invalid_code = """
