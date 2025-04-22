@@ -17,8 +17,37 @@ import logging
 from smart_contract import (
     deploy_contract, execute_contract, 
     create_transfer_contract, create_auction_contract,
-    get_deployed_contracts, get_contract
+    get_contract as get_contract_info
 )
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger('blockchain')
+
+# Constants
+MINING_REWARD = 100  # Reward for mining a block
+BLOCK_TRANSACTIONS_LIMIT = 5  # Maximum number of transactions per block
+DIFFICULTY = 4  # Number of leading zeros in block hash, can be overridden by env vars
+NODE_ADDRESSES = []  # Will be populated with other node addresses from env vars
+
+# Global variables
+blockchain = []  # The blockchain
+pending_transactions = []  # Transaction pool
+account_balances = {}  # Account model: public_key -> balance
+contract_state_db = {}     # Contract state: contract_id-key -> value
+deployed_contracts = {}    # Deployed contracts: contract_id -> contract_info
+mined_nonces = set()  # Set of nonces that have been used
+mining_thread = None
+
+
+# Node keypair
+private_key = None
+public_key = None
+public_key_str = None  # String representation for addresses
 
 app = Flask(__name__)
 @app.route('/stats', methods=['GET'])
@@ -105,32 +134,7 @@ Main program for a Bitcoin-like blockchain node
 
 
 
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger('blockchain')
 
-# Constants
-MINING_REWARD = 100  # Reward for mining a block
-BLOCK_TRANSACTIONS_LIMIT = 5  # Maximum number of transactions per block
-DIFFICULTY = 4  # Number of leading zeros in block hash, can be overridden by env vars
-NODE_ADDRESSES = []  # Will be populated with other node addresses from env vars
-
-# Global variables
-blockchain = []  # The blockchain
-pending_transactions = []  # Transaction pool
-account_balances = {}  # Account model: public_key -> balance
-mined_nonces = set()  # Set of nonces that have been used
-mining_thread = None
-
-
-# Node keypair
-private_key = None
-public_key = None
-public_key_str = None  # String representation for addresses
 
 def generate_keypair():
     """
@@ -407,7 +411,9 @@ def mining_thread_func():
                     tx['contract_id'], 
                     tx['from'], 
                     tx['function'], 
-                    tx.get('args', {})
+                    tx.get('args', {}),
+                    contract_state_db,
+                    deployed_contracts
                 )
                 if not result['success']:
                     # Skip invalid transactions
@@ -547,7 +553,7 @@ def validate_deploy_contract_transaction(transaction):
         return False
     
     # Pre-execute contract deployment to validate the code
-    result = deploy_contract(transaction['code'], sender)
+    result = deploy_contract(transaction['code'], sender, contract_state_db, deployed_contracts)
     if not result['success']:
         logger.warning(f"Contract deployment validation failed: {result['output']}")
         return False
@@ -585,7 +591,9 @@ def validate_call_contract_transaction(transaction):
         transaction['contract_id'], 
         sender, 
         transaction['function'], 
-        transaction.get('args', {})
+        transaction.get('args', {}),
+        contract_state_db,
+        deployed_contracts
     )
     
     if not result['success']:
@@ -596,6 +604,7 @@ def validate_call_contract_transaction(transaction):
     transaction['result'] = result['output']
     
     return True
+
 
 def process_transaction(transaction):
     """
@@ -666,7 +675,7 @@ def process_deploy_contract_transaction(transaction):
     code = transaction['code']
     
     # Deploy the contract
-    result = deploy_contract(code, sender)
+    result = deploy_contract(code, sender, contract_state_db, deployed_contracts)
     if not result['success']:
         logger.warning(f"❌ Failed to deploy contract: {result['output']}")
         return False
@@ -699,7 +708,14 @@ def process_call_contract_transaction(transaction):
     args = transaction.get('args', {})
     
     # Execute the contract
-    result = execute_contract(contract_id, sender, function, args)
+    result = execute_contract(
+        contract_id, 
+        sender, 
+        function, 
+        args,
+        contract_state_db,
+        deployed_contracts
+    )
     if not result['success']:
         logger.warning(f"❌ Failed to execute contract {contract_id}: {result['output']}")
         return False
@@ -769,20 +785,22 @@ def validate_block(block):
         
         # For contract transactions, verify the execution result matches what's in the block
         if tx.get('type') == 'deploy_contract' and 'result' in tx:
-            # 验证合约部署结果
-            result = deploy_contract(tx['code'], tx['from'])
+            # Verify contract deployment result
+            result = deploy_contract(tx['code'], tx['from'], contract_state_db, deployed_contracts)
             if result['output'] != tx['result']:
                 logger.warning(f"Contract deployment result mismatch for tx {idx}")
                 invalid_txs.append(idx)
                 continue
-        
+
         elif tx.get('type') == 'call_contract' and 'result' in tx:
-            # 验证合约调用结果
+            # Verify contract call result
             result = execute_contract(
                 tx['contract_id'], 
                 tx['from'], 
                 tx['function'], 
-                tx.get('args', {})
+                tx.get('args', {}),
+                contract_state_db,
+                deployed_contracts
             )
             if result['output'] != tx['result']:
                 logger.warning(f"Contract execution result mismatch for tx {idx}. Expected: {tx['result']}, Got: {result['output']}")
@@ -804,11 +822,11 @@ def get_contract_info(contract_id):
     Input: Contract ID in URL
     Output: JSON with contract information
     """
-    # 使用新的函数获取合约信息
-    contract = get_contract(contract_id)
-    
-    if not contract:
+    # Use deployed_contracts directly
+    if contract_id not in deployed_contracts:
         return jsonify({'message': 'Contract not found'}), 404
+    
+    contract = deployed_contracts[contract_id]
     
     # Don't include the code for security reasons, just basic info
     contract_info = {
@@ -1136,9 +1154,6 @@ def get_contract(contract_id):
     Input: Contract ID in URL
     Output: JSON with contract information
     """
-    # Import contract info from smart_contract module
-    from smart_contract import deployed_contracts
-    
     if contract_id not in deployed_contracts:
         return jsonify({'message': 'Contract not found'}), 404
     
@@ -1204,18 +1219,18 @@ def main():
     Input: None
     Output: None
     """
-    # 声明全局变量
-    global private_key, public_key, public_key_str, blockchain, DIFFICULTY
+    # Declare global variables
+    global private_key, public_key, public_key_str, blockchain, DIFFICULTY, contract_state_db, deployed_contracts
     
-    # 从环境变量配置日志级别
+    # From environment variables configure log level
     log_level = os.environ.get('LOG_LEVEL', 'INFO')
     logging.getLogger().setLevel(getattr(logging, log_level))
     
-    # 配置Flask日志，减少请求日志
+    # Configure Flask logging, reduce request logs
     werkzeug_logger = logging.getLogger('werkzeug')
     werkzeug_logger.setLevel(logging.WARNING)
     
-    # 从环境变量配置挖矿难度
+    # From environment variables configure mining difficulty
     difficulty = os.environ.get('MINING_DIFFICULTY')
     if difficulty:
         try:
@@ -1241,34 +1256,11 @@ def main():
     
     logger.info(f"🌐 Connected to peers: {NODE_ADDRESSES}")
     
-    # Create example contracts for easy testing
-    # Deploy transfer contract
-    # 创建示例合约
-    try:
-        # 部署转账合约
-        transfer_code = create_transfer_contract()
-        transfer_result = deploy_contract(transfer_code, public_key_str)
-        if transfer_result['success']:
-            logger.info(f"📄 Example transfer contract created with ID: {transfer_result['contract_id']}")
-        else:
-            logger.warning(f"Failed to deploy transfer contract: {transfer_result['output']}")
-            
-        # 部署拍卖合约
-        auction_code = create_auction_contract()
-        auction_result = deploy_contract(auction_code, public_key_str)
-        if auction_result['success']:
-            logger.info(f"📄 Example auction contract created with ID: {auction_result['contract_id']}")
-        else:
-            logger.warning(f"Failed to deploy auction contract: {auction_result['output']}")
-    except Exception as e:
-        logger.error(f"Error creating example contracts: {str(e)}")
-    
     # Start mining
     start_mining()
     
     # Start the Flask app
     logger.info(f"🚀 Starting blockchain node API server on port 5000")
     app.run(host='0.0.0.0', port=5000)
-
 if __name__ == "__main__":
     main()
