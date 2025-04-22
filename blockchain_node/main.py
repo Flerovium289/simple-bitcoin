@@ -451,46 +451,6 @@ def stop_mining():
     if mining_thread is not None:
         mining_thread = None
 
-# def validate_transaction(transaction):
-#     """
-#     Validate a transaction
-    
-#     Input:
-#         transaction: Transaction dict
-#     Output:
-#         Boolean: True if transaction is valid, False otherwise
-#     TODO:
-#         - Check if transaction has all required fields
-#         - Verify the signature
-#         - Check if sender has enough balance
-#     """
-#     # Check if transaction has all required fields
-#     required_fields = ['timestamp', 'from', 'to', 'value', 'signature']
-#     if not all(field in transaction for field in required_fields):
-#         missing_fields = [field for field in required_fields if field not in transaction]
-#         logger.warning(f"Transaction missing required fields: {', '.join(missing_fields)}")
-#         return False
-    
-#     # Skip validation for mining rewards
-#     if transaction['from'] == "COINBASE":
-#         return True
-    
-#     # Check if sender has enough balance
-#     sender = transaction['from']
-#     value = transaction['value']
-    
-#     if sender not in account_balances:
-#         logger.warning(f"Sender account {sender[:8]}... does not exist")
-#         return False
-        
-#     if account_balances[sender] < value:
-#         logger.warning(f"Insufficient balance: {sender[:8]}... has {account_balances[sender]}, needs {value}")
-#         return False
-    
-#     # Verify signature - this would be implemented in a real system
-#     # For simplicity, we'll skip detailed signature verification here
-    
-#     return True
 
 def validate_transaction(transaction):
     """

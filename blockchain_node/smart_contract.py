@@ -87,6 +87,9 @@ def execute_contract(contract_id, caller, function, args=None):
     Output:
         result: Dictionary containing execution result and state changes
     """
+    logger.info(f"🔄 Executing contract {contract_id}, function: {function}, caller: {caller[:8]}...")
+    logger.info(f"🔧 Function args: {args}")
+    
     if contract_id not in deployed_contracts:
         logger.warning(f"❌ Contract {contract_id} not found")
         return {
@@ -98,6 +101,15 @@ def execute_contract(contract_id, caller, function, args=None):
     contract = deployed_contracts[contract_id]
     code = contract['code']
     
+    # Log current contract state
+    current_state = {}
+    for key in contract_state_db:
+        if key.startswith(f"{contract_id}-"):
+            var_name = key[len(contract_id)+1:]
+            current_state[var_name] = contract_state_db[key]
+    
+    logger.info(f"📊 Current contract state: {current_state}")
+    
     # Prepare execution environment
     env = {
         'contract_id': contract_id,
@@ -105,12 +117,14 @@ def execute_contract(contract_id, caller, function, args=None):
         'args': args or {},
         'get_state': lambda key: get_contract_state(contract_id, key),
         'set_state': lambda key, value: set_contract_state(contract_id, key, value),
-        'contract_state_changes': {}  # To track state changes
+        'contract_state_changes': {},  # To track state changes
+        'time': time,  # Add time module for contract use
     }
     
     try:
         # Execute the contract code in the prepared environment
         # In a real implementation, we would use a sandbox for security
+        logger.info(f"🧪 Compiling contract code...")
         exec(code, env)
         
         # Check if the requested function exists
@@ -125,7 +139,9 @@ def execute_contract(contract_id, caller, function, args=None):
         env['contract_state_changes'] = {}
         
         # Call the requested function
+        logger.info(f"🚀 Calling function {function}...")
         result = env[function](**args) if args else env[function]()
+        logger.info(f"✅ Function execution result: {result}")
         
         # Collect state changes
         state_changes = []
@@ -133,13 +149,26 @@ def execute_contract(contract_id, caller, function, args=None):
             full_key = f"{contract_id}-{key}"
             state_changes.append(f"{full_key}:{value}")
         
-        logger.info(f"✅ Contract {contract_id} executed function {function} successfully")
+        logger.info(f"📝 State changes: {state_changes}")
+        
+        # Log updated contract state
+        updated_state = {}
+        for key in contract_state_db:
+            if key.startswith(f"{contract_id}-"):
+                var_name = key[len(contract_id)+1:]
+                updated_state[var_name] = contract_state_db[key]
+        
+        logger.info(f"📊 Updated contract state: {updated_state}")
+        
         return {
             'success': True,
             'output': state_changes if state_changes else "Success"
         }
     except Exception as e:
         logger.warning(f"❌ Contract execution failed: {str(e)}")
+        # Log the exception traceback for debugging
+        import traceback
+        logger.error(f"Exception traceback: {traceback.format_exc()}")
         return {
             'success': False,
             'output': f"Fail: {str(e)}"
